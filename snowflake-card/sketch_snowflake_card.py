@@ -11,9 +11,11 @@ from shapely.geometry.base import BaseGeometry
 from shapely.geometry.linestring import LineString
 from shapely.geometry.multipolygon import MultiPolygon
 from shapely.geometry.polygon import Polygon, LinearRing
-from shapely.ops import unary_union
+from shapely.ops import unary_union, polygonize
 from shapely.set_operations import difference
 from vsketch import Vsketch
+
+from geo import calculate_angle
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -67,11 +69,15 @@ class SnowflakeCardSketch(vsketch.SketchClass):
 
         sketch_group = PolygonGroup("snowflake card")
 
-        base_star = self.filled_hexagon_star2(13, 9, self.size / 10, 1, 0.07)
-        sketch_group.add_group(base_star, "star1")
+        # base_star = self.filled_hexagon_star2(13, 9, self.size / 10, 1, 0.07)
+        # sketch_group.add_group(base_star, "star1")
 
         sector_star = self.filled_hexagon_star_with_sector_ends(7, 5, self.size / 15, 1, sector_offset=1.2, sector_width=0.7, pen_width=0.07)
         sketch_group.add_group(sector_star, "star2")
+
+        sector_star_to_full = self.hexagon_star_with_sector_ends(13, 9, self.size / 15, 1, sector_offset=1.2, sector_width=0.7)
+        sector_star_filled = self.filled_polygon_my_way(sector_star_to_full, 0.07)
+        sketch_group.add_group(sector_star_filled, 4, "star3")
 
         sketch_group.draw(vsk)
 
@@ -133,6 +139,80 @@ class SnowflakeCardSketch(vsketch.SketchClass):
             breakout -= 1
             if breakout < 0:
                 raise ValueError("Too many iterations")
+        return group
+
+    def filled_polygon_my_way(self, polygon: Polygon, pen_width: float) -> PolygonGroup:
+        def polygon_coord_windows(polygon):
+            coords = list(polygon.exterior.coords)
+            if coords[0] == coords[-1]:
+                # Remove the last point if it's the same as the first
+                coords = coords[:-1]
+            yield coords[-1], coords[0], coords[1]
+            for i in range(len(coords)-2):
+                yield coords[i], coords[i+1], coords[i+2]
+            yield coords[-2], coords[-1], coords[0]
+
+        def offset_point(p1, p2, p3, distance):
+            angle = calculate_angle(p1, p2, p3, use_360=True)
+
+            bisect_angle = math.radians(angle/2)
+
+            # Calculate the offset distance
+            offset_distance = distance / math.sin(bisect_angle)
+
+            direction_angle = math.atan2(p2[1] - p1[1], p2[0] - p1[0]) + bisect_angle
+
+            # Calculate the new point
+            new_x = p2[0] + offset_distance * math.cos(direction_angle)
+            new_y = p2[1] + offset_distance * math.sin(direction_angle)
+            return (new_x, new_y)
+
+        def create_offset_polygon(polygon, distance):
+            new_coords = []
+            for p1, p2, p3 in polygon_coord_windows(polygon):
+                try:
+                    new_coord = offset_point(p1, p2, p3, distance)
+                    new_coords.append(new_coord)
+                except ZeroDivisionError:
+                    logger.error(f"Zero division error at {p1}, {p2}, {p3}")
+                    new_coords.append(p2)
+                    pass
+            return Polygon(new_coords)
+
+        group = PolygonGroup("filled_polygon_my_way")
+        simplified_polygon = polygon.simplify(0.01)
+
+        for coord in simplified_polygon.exterior.coords:
+            print(f"coord: {coord}")
+        group.add_polygon(simplified_polygon, 1, "outer_polygon")
+        offset_polygons = []
+        for i in range(8):
+            offset_polygon = create_offset_polygon(simplified_polygon, -pen_width * i)
+            offset_polygons.append(offset_polygon)
+            print(f"{list(offset_polygon.interiors)} offset_polygon.is_simple: {offset_polygon.is_simple} offset_polygon.is_valid: {offset_polygon.is_valid}")
+            #group.add_polygon(offset_polygon, 1, f"fill_polygon_{pen_width}_{i}")
+
+        offset_polygons.append(create_offset_polygon(simplified_polygon, -pen_width * 8))
+        group.add_polygon(offset_polygons[8], 2, f"fill_polygon_{pen_width}_8")
+
+        test = unary_union(offset_polygons[8].exterior)
+        print(test)
+        remaining = difference(simplified_polygon, test)
+        holes = [Polygon(hole) for hole in remaining.interiors]
+        print(len(holes))
+
+
+
+        print(test.geom_type)
+        for i, polygon in enumerate(polygonize(test)):
+            print(f"Polygon {i}: {polygon}")
+            union = unary_union([polygon, test])
+            if union.area > offset_polygons[8].area:
+                continue
+            group.add_polygon(polygon, 3, f"test_poly_{i}")
+            offset_polygon = create_offset_polygon(polygon, -pen_width)
+            group.add_polygon(offset_polygon, 4, f"fill_polygon_{pen_width}_test_{i}")
+
         return group
 
     def filled_hexagon_star2(self, x: float, y: float, radius: float, thickness: float, pen_width: float) -> PolygonGroup:
