@@ -5,17 +5,16 @@ import math
 from dataclasses import dataclass
 
 import vsketch
-from anyio.streams.stapled import MultiListener
 from shapely import affinity
 from shapely.geometry.base import BaseGeometry
-from shapely.geometry.linestring import LineString
 from shapely.geometry.multipolygon import MultiPolygon
+from shapely.geometry.point import Point
 from shapely.geometry.polygon import Polygon, LinearRing
 from shapely.ops import unary_union, polygonize
 from shapely.set_operations import difference
 from vsketch import Vsketch
 
-from geo import calculate_angle, perspective_by_angle, create_offset_polygon
+from geo import perspective_by_angle, create_offset_polygon
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -56,38 +55,98 @@ class PolygonGroup:
 
 class SnowflakeCardSketch(vsketch.SketchClass):
     # Sketch parameters
-    size = vsketch.Param(60, min_value=1, max_value=200)
-    complexity = vsketch.Param(5, min_value=3, max_value=8)
-    randomness = vsketch.Param(0.3, min_value=0, max_value=1)
+    angle = vsketch.Param(3, min_value=0, max_value=45)
+    centre_x = vsketch.Param(210*3//4, min_value=0, max_value=210)
+    centre_y = vsketch.Param(148/2, min_value=0, max_value=148)
+    snowflake_size = vsketch.Param(3.0, min_value=3.0, max_value=20.0)
+    grid_spacing = vsketch.Param(6.0, min_value=5.0, max_value=20.0)
+    outer_size = vsketch.Param(56, min_value=10, max_value=100)
+    inner_size = vsketch.Param(50, min_value=10, max_value=100)
+    centre_size = vsketch.Param(44, min_value=10, max_value=100)
+    debug = vsketch.Param(False)
 
     def draw(self, vsk: vsketch.Vsketch) -> None:
         vsk.size("a5", landscape=True, center=False)
-        vsk.scale("cm")
+        vsk.scale("mm")
 
         # create the snowflake
-        vsk.penWidth("0.7mm")
+        vsk.penWidth("0.3mm")
 
         sketch_group = PolygonGroup("snowflake card")
 
         # draw a line down the middle of the card where it will be folded
-        vsk.line(0, 0, 0, self.size)
+        vsk.stroke(1)
+        vsk.line(210/2, 0, 210/2, 148)
+        vsk.stroke(2)
+
+        # coords of front of card
+        front_centre_x = self.centre_x
+        front_centre_y = self.centre_y
+
+        # draw a snowflake with sector ends
+        sector_star_outer = self.hexagon_star_with_sector_ends(front_centre_x, front_centre_y, self.outer_size, 15, sector_offset=20, sector_width=10)
+        rotated_star_outer = affinity.rotate(sector_star_outer, origin=(front_centre_x, front_centre_y), angle=30+self.angle)
+
+        sector_star_inner = self.hexagon_star_with_sector_ends(front_centre_x, front_centre_y, self.inner_size, 7, sector_offset=26, sector_width=10)
+        rotated_star_inner = affinity.rotate(sector_star_inner, origin=(front_centre_x, front_centre_y), angle=30+self.angle)
+
+        sector_star_centre = self.hexagon_star_with_sector_ends(front_centre_x, front_centre_y, self.centre_size, 0, sector_offset=32, sector_width=8)
+        rotated_star_centre = affinity.rotate(sector_star_centre, origin=(front_centre_x, front_centre_y), angle=30+self.angle)
+
+        if self.debug:
+            sketch_group.add_polygon(rotated_star_outer, 10, "star1")
+            sketch_group.add_polygon(rotated_star_inner, 10, "star2")
+            sketch_group.add_polygon(rotated_star_centre, 10, "star3")
+
+        # draw a triangular grid from the centre of the front of the card
+        grid_points = self.triangular_grid(front_centre_x, front_centre_y, self.grid_spacing, self.outer_size*1.1, angle_degrees=30+self.angle)
+        for x, y in grid_points:
+            # is the point within the rotated star polygon?
+            if rotated_star_outer.contains(Point(x, y)):
+                sector_star = self.hexagon_star_with_sector_ends(
+                    x=x,
+                    y=y,
+                    radius=self.snowflake_size,
+                    thickness=vsk.random(0.4,0.7),
+                    sector_offset=vsk.random(1.0, self.snowflake_size - 1.0),
+                    sector_width=vsk.random(0, 1.0)
+                )
+                offset_sector_star = self.offset_my_way(sector_star, -0.1)
+                rotated = affinity.rotate(sector_star, origin=(x, y), angle=self.angle)
+                rotated_offset = affinity.rotate(offset_sector_star, origin=(x, y), angle=self.angle)
+                layer = 3
+                if rotated_star_inner.contains(Point(x, y)):
+                    layer = 4
+                if rotated_star_centre.contains(Point(x, y)):
+                    layer = 5
+                # map x which can be between 0 and 210 to a number from 0 to 1
+                normalised_x = x / 210
+                normalised_y = y / 148
+                value = vsk.noise(normalised_x, normalised_y, grid_mode=False)
+                angle = 0 # value * 180 - 90
+
+                perspective_star = perspective_by_angle(rotated, angle, 20)
+                perspective_star_offset = perspective_by_angle(rotated_offset, angle, 20)
+                sketch_group.add_polygon(perspective_star, layer, f"star_{x}_{y}")
+                sketch_group.add_polygon(perspective_star_offset, 6, f"star_offset_{x}_{y}")
+
 
         # base_star = self.filled_hexagon_star2(13, 9, self.size / 10, 1, 0.07)
         # sketch_group.add_group(base_star, "star1")
 
-        sector_star = self.filled_hexagon_star_with_sector_ends(7, 5, self.size / 15, 1, sector_offset=1.2, sector_width=0.7, pen_width=0.07)
-        sketch_group.add_group(sector_star, "star2")
-
-        sector_star_to_full = self.hexagon_star_with_sector_ends(13, 9, self.size / 15, 1, sector_offset=1.2, sector_width=0.7)
-        sector_star_filled = self.filled_polygon_my_way(sector_star_to_full, 0.07)
-        sketch_group.add_group(sector_star_filled, 4, "star3")
-
-        sector_star_4 = self.hexagon_star_with_sector_ends(19, 5, self.size / 15, 1, sector_offset=1.4, sector_width=0.7)
-        sector_star_4_offset = create_offset_polygon(sector_star_4, -0.21)
-        skewed_star = perspective_by_angle(polygon=sector_star_4, angle_degrees=45.0, distance=20)
-        skewed_star_offset = perspective_by_angle(polygon=sector_star_4_offset, angle_degrees=45.0, distance=20)
-        sketch_group.add_polygon(skewed_star, 7, "star4")
-        sketch_group.add_polygon(skewed_star_offset, 8, "star4_offset")
+        # sector_star = self.filled_hexagon_star_with_sector_ends(7, 5, self.size / 15, 1, sector_offset=1.2, sector_width=0.7, pen_width=0.07)
+        # sketch_group.add_group(sector_star, "star2")
+        #
+        # sector_star_to_full = self.hexagon_star_with_sector_ends(13, 9, self.size / 15, 1, sector_offset=1.2, sector_width=0.7)
+        # sector_star_filled = self.filled_polygon_my_way(sector_star_to_full, 0.07)
+        # sketch_group.add_group(sector_star_filled, 4, "star3")
+        #
+        # sector_star_4 = self.hexagon_star_with_sector_ends(19, 5, self.size / 15, 1, sector_offset=1.4, sector_width=0.7)
+        # sector_star_4_offset = create_offset_polygon(sector_star_4, -0.21)
+        # skewed_star = perspective_by_angle(polygon=sector_star_4, angle_degrees=45.0, distance=20)
+        # skewed_star_offset = perspective_by_angle(polygon=sector_star_4_offset, angle_degrees=45.0, distance=20)
+        # sketch_group.add_polygon(skewed_star, 7, "star4")
+        # sketch_group.add_polygon(skewed_star_offset, 8, "star4_offset")
 
         sketch_group.draw(vsk)
 
@@ -150,6 +209,10 @@ class SnowflakeCardSketch(vsketch.SketchClass):
             if breakout < 0:
                 raise ValueError("Too many iterations")
         return group
+
+    def offset_my_way(self, polygon: Polygon, distance: float) -> Polygon:
+        simplified_polygon = polygon.simplify(0.01)
+        return create_offset_polygon(simplified_polygon, distance)
 
     def filled_polygon_my_way(self, polygon: Polygon, pen_width: float) -> PolygonGroup:
         group = PolygonGroup("filled_polygon_my_way")
@@ -215,7 +278,7 @@ class SnowflakeCardSketch(vsketch.SketchClass):
         # calculate the distance from the left to the start of the line (essentially a line from the mid-point of the
         # left side at an angle of 30 degrees
         inset_distance = math.tan(math.radians(30)) * thickness * 0.5
-        assert length > inset_distance * 2
+        assert length > inset_distance * 2, f"Length ({length}) must be greater than inset distance ({inset_distance}) * 2"
 
         # draw a rectangle but with hexagonal ends at the left and right
         points = [
@@ -234,6 +297,42 @@ class SnowflakeCardSketch(vsketch.SketchClass):
         ]
 
         return Polygon(points)
+
+    # output a series of coordinates of grid points for a grid that forms equilateral triangles, with the points
+    # spaced by the given spacing and repeating the given number of times. The first point is at x, y and
+    # subsequent points go outwards from there in all directions.
+    def triangular_grid(self, x: float, y: float, spacing: float, distance: float, angle_degrees: int) -> list[tuple[float, float]]:
+        def in_accumulator(x: float, y: float, accumulator: list[tuple[float, float]]) -> bool:
+            for point in accumulator:
+                if math.isclose(point[0], x, abs_tol=0.00001) and math.isclose(point[1], y, abs_tol=0.00001):
+                    return True
+            return False
+
+        # Initialize with starting point
+        accumulator = [(x, y)]
+        # Queue of points to process
+        queue = [(x, y)]
+
+        while queue:
+            current_x, current_y = queue.pop(0)
+
+            # Generate points in all six directions
+            for i in range(6):
+                angle = math.radians(i * 60 + angle_degrees)
+                new_x = current_x + math.cos(angle) * spacing
+                new_y = current_y + math.sin(angle) * spacing
+
+                # Calculate distance from origin to new point
+                line_length = math.sqrt((new_x - x) ** 2 + (new_y - y) ** 2)
+
+                # If point is within distance and not already processed
+                if line_length <= distance and not in_accumulator(new_x, new_y, accumulator):
+                    accumulator.append((new_x, new_y))
+                    queue.append((new_x, new_y))
+
+        return accumulator
+
+
 
     def finalize(self, vsk: vsketch.Vsketch) -> None:
         vsk.vpype("linemerge linesimplify reloop linesort")
