@@ -110,11 +110,12 @@ class SnowflakeCardSketch(vsketch.SketchClass):
         ])
 
         # make a rectangle with the margin of the size of a snowflake in from the edge
+        margin = self.snowflake_size * 1.5
         snowflake_field = Polygon([
-            (self.snowflake_size, self.snowflake_size),
-            (210-self.snowflake_size, self.snowflake_size),
-            (210-self.snowflake_size, 148-self.snowflake_size),
-            (self.snowflake_size, 148-self.snowflake_size)]
+            (margin, margin),
+            (210-margin, margin),
+            (210-margin, 148-margin),
+            (margin, 148-margin)]
         )
 
         # coords of front of card
@@ -144,17 +145,21 @@ class SnowflakeCardSketch(vsketch.SketchClass):
         for x, y in grid_points:
             in_star_outline = rotated_star_outer.contains(Point(x, y))
             if in_star_outline:
-                sketch_group.add_geom(self.draw_a_star(x, y, vsk.random), 2, f"star_{x}_{y}")
+                sketch_group.add_geom(self.draw_a_star(x, y, self.snowflake_size, vsk.random), 2, f"star_{x}_{y}")
                 used_points.append((x, y))
 
         selector = int(vsk.random(0, 4))
 
-        for i, (x, y) in enumerate(grid_points):
+        glitter_flakes_size = self.snowflake_size * 1.5
+
+        for i, (grid_x, grid_y) in enumerate(grid_points):
+            x = vsk.random(grid_x - glitter_flakes_size, grid_x + glitter_flakes_size)
+            y = vsk.random(grid_y - glitter_flakes_size, grid_y + glitter_flakes_size)
             if not snowflake_field.contains(Point(x, y)):
                 continue
 
             line = shortest_line(mid_line, Point(x, y))
-            if line.length < self.snowflake_size * 2.0:
+            if line.length < glitter_flakes_size * 2.0:
                 continue
 
             if i%5 != selector:
@@ -164,23 +169,23 @@ class SnowflakeCardSketch(vsketch.SketchClass):
                 continue
 
             # check we are not too close to a point we have already used
-            too_close = any(math.hypot(used_x - x, used_y - y) < self.snowflake_size * 3
+            too_close = any(math.hypot(used_x - x, used_y - y) < glitter_flakes_size * 3
                         for used_x, used_y in used_points)
             if not too_close:
-                star = self.draw_a_star(x, y, vsk.random)
-                if not credits_box.intersects(star):
+                star = self.draw_a_star(x, y, glitter_flakes_size, vsk.random)
+                if snowflake_field.contains(star) and not credits_box.intersects(star):
                     sketch_group.add_geom(star, 3, f"star_{x}_{y}")
                     used_points.append((x, y))
 
         sketch_group.draw(vsk)
 
-    def draw_a_star(self, x, y, random):
+    def draw_a_star(self, x, y, radius, random):
         # draw a star
         if random(0, 1) > self.dendrite_proportion:
             sector_star = self.hexagon_star_with_sector_ends(
                 x=x,
                 y=y,
-                radius=self.snowflake_size,
+                radius=radius,
                 thickness=random(0.4,0.7),
                 sector_offset=random(1.0, self.snowflake_size - 1.0),
                 sector_width=random(0, 1.0)
@@ -188,8 +193,8 @@ class SnowflakeCardSketch(vsketch.SketchClass):
             return affinity.rotate(sector_star, origin=(x, y), angle=self.angle)
         else:
             # draw a dendrite
-            branch_configs = list(self.random_branch_config(self.snowflake_size, 0.1, random))
-            dendrite = self.stellar_dendrite(x, y, self.snowflake_size, branch_configs)
+            branch_configs = list(self.random_branch_config(radius, 0.1, random))
+            dendrite = self.stellar_dendrite(x, y, radius, branch_configs)
             return affinity.rotate(dendrite, origin=(x, y), angle=self.angle)
 
     def hexagon(self, x: float, y: float, radius: float) -> BaseGeometry:
