@@ -2,22 +2,24 @@ from __future__ import annotations
 
 import logging
 import math
-from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Iterable
 
 import vsketch
-from numpy import number
 from shapely import affinity
 from shapely.geometry.base import BaseGeometry
+from shapely.geometry.linestring import LineString
+from shapely.geometry.multilinestring import MultiLineString
 from shapely.geometry.multipolygon import MultiPolygon
 from shapely.geometry.point import Point
 from shapely.geometry.polygon import Polygon, LinearRing
+from shapely.linear import shortest_line
 from shapely.ops import unary_union, polygonize
 from shapely.set_operations import difference
+from vpype import FONT_NAMES
 from vsketch import Vsketch
 
-from geo import perspective_by_angle, create_offset_polygon
+from geo import create_offset_polygon
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -26,7 +28,7 @@ logging.basicConfig(level=logging.INFO)
 @dataclass
 class PolygonStoreEntry:
     layer: int
-    geometry: Polygon | MultiPolygon
+    geometry: BaseGeometry
     name: str
 
 class PolygonGroup:
@@ -37,6 +39,9 @@ class PolygonGroup:
 
     def add_polygon(self, polygon: Polygon | MultiPolygon, layer: int, name: str):
         self.polygons.append(PolygonStoreEntry(layer, polygon, name))
+
+    def add_geom(self, geometry: BaseGeometry, layer: int, name: str):
+        self.polygons.append(PolygonStoreEntry(layer, geometry, name))
 
     def add_group(self, group: PolygonGroup, name: str, change_layer: int | None = None):
         if name in self.groups:
@@ -51,9 +56,9 @@ class PolygonGroup:
     def draw(self, vsk: Vsketch):
         for entry in self.all_geometries():
             try:
-                if entry.layer == 2:
-                    vsk.stroke(entry.layer)
-                    vsk.geometry(entry.geometry)
+                # if entry.layer == 2:
+                vsk.stroke(entry.layer)
+                vsk.geometry(entry.geometry)
             except ValueError as e:
                 raise ValueError(f"Error drawing {entry.name}") from e
 
@@ -68,12 +73,13 @@ class SnowflakeCardSketch(vsketch.SketchClass):
     angle = vsketch.Param(0, min_value=0, max_value=45)
     centre_x = vsketch.Param(210*3/4, min_value=0, max_value=210)
     centre_y = vsketch.Param(148/2, min_value=0, max_value=148)
-    snowflake_size = vsketch.Param(3.0, min_value=3.0, max_value=20.0)
+    snowflake_size = vsketch.Param(3.0, min_value=2.0, max_value=20.0)
     grid_spacing = vsketch.Param(6.0, min_value=5.0, max_value=20.0)
     outer_size = vsketch.Param(56, min_value=10, max_value=100)
     inner_size = vsketch.Param(50, min_value=10, max_value=100)
     centre_size = vsketch.Param(44, min_value=10, max_value=100)
     dendrite_proportion = vsketch.Param(0.35, min_value=0.0, max_value=1.0)
+    non_star_percentage = vsketch.Param(90, min_value=0, max_value=100)
     page_divider = vsketch.Param(False)
     debug = vsketch.Param(False)
 
@@ -82,15 +88,34 @@ class SnowflakeCardSketch(vsketch.SketchClass):
         vsk.scale("mm")
 
         # create the snowflake
-        vsk.penWidth("0.3mm")
+        vsk.penWidth("0.4mm")
 
         sketch_group = PolygonGroup("snowflake card")
+
+        mid_line = LineString([(210/2, 0), (210/2, 148)])
 
         # draw a line down the middle of the card where it will be folded
         if self.page_divider:
             vsk.stroke(1)
-            vsk.line(210/2, 0, 210/2, 148)
+            vsk.geometry(mid_line)
         vsk.stroke(2)
+
+        # add some credits text to the back of the card
+        vsk.text("Card designed and plotted by Simon Hildrew", 210/4, 148*0.98, align="center", size=2.5)
+        credits_box = Polygon([
+            (210/10, 148*0.97),
+            (210*4/10, 148*0.97),
+            (210*4/10, 148*0.99),
+            (210/10, 148*0.99)
+        ])
+
+        # make a rectangle with the margin of the size of a snowflake in from the edge
+        snowflake_field = Polygon([
+            (self.snowflake_size, self.snowflake_size),
+            (210-self.snowflake_size, self.snowflake_size),
+            (210-self.snowflake_size, 148-self.snowflake_size),
+            (self.snowflake_size, 148-self.snowflake_size)]
+        )
 
         # coords of front of card
         front_centre_x = self.centre_x
@@ -112,47 +137,60 @@ class SnowflakeCardSketch(vsketch.SketchClass):
             sketch_group.add_polygon(rotated_star_centre, 10, "star3")
 
         # draw a triangular grid from the centre of the front of the card
-        grid_points = self.triangular_grid(front_centre_x, front_centre_y, self.grid_spacing, self.outer_size*1.1, angle_degrees=30+self.angle)
-        for x, y in grid_points:
-            # is the point within the rotated star polygon?
-            if rotated_star_outer.contains(Point(x, y)):
-                # draw a star
-                if vsk.random(0, 1) > self.dendrite_proportion:
-                    sector_star = self.hexagon_star_with_sector_ends(
-                        x=x,
-                        y=y,
-                        radius=self.snowflake_size,
-                        thickness=vsk.random(0.4,0.7),
-                        sector_offset=vsk.random(1.0, self.snowflake_size - 1.0),
-                        sector_width=vsk.random(0, 1.0)
-                    )
-                    offset_sector_star = self.offset_my_way(sector_star, -0.1)
-                    rotated = affinity.rotate(sector_star, origin=(x, y), angle=self.angle)
-                    rotated_offset = affinity.rotate(offset_sector_star, origin=(x, y), angle=self.angle)
-                    layer = 3
-                    if rotated_star_inner.contains(Point(x, y)):
-                        layer = 4
-                    if rotated_star_centre.contains(Point(x, y)):
-                        layer = 5
+        grid_points = self.triangular_grid(front_centre_x, front_centre_y, self.grid_spacing, self.outer_size*3.5, angle_degrees=30+self.angle)
+        used_points = []
 
-                    sketch_group.add_polygon(rotated, 2, f"star_{x}_{y}")
-                    sketch_group.add_polygon(rotated_offset, layer, f"star_offset_{x}_{y}")
-                else:
-                    # draw a dendrite
-                    branch_configs = list(self.random_branch_config(self.snowflake_size, 0.1, vsk.random))
-                    dendrite = self.stellar_dendrite(x, y, self.snowflake_size, 0.1, branch_configs)
-                    offset_dendrite = self.offset_my_way(dendrite, -0.001)
-                    rotated = affinity.rotate(dendrite, origin=(x, y), angle=self.angle)
-                    rotated_offset = affinity.rotate(offset_dendrite, origin=(x, y), angle=self.angle)
-                    layer = 3
-                    if rotated_star_inner.contains(Point(x, y)):
-                        layer = 4
-                    if rotated_star_centre.contains(Point(x, y)):
-                        layer = 5
-                    sketch_group.add_polygon(rotated, 2, f"dendrite_{x}_{y}")
-                    sketch_group.add_polygon(rotated_offset, layer, f"dendrite_offset_{x}_{y}")
+        # first, fill in the star outline
+        for x, y in grid_points:
+            in_star_outline = rotated_star_outer.contains(Point(x, y))
+            if in_star_outline:
+                sketch_group.add_geom(self.draw_a_star(x, y, vsk.random), 2, f"star_{x}_{y}")
+                used_points.append((x, y))
+
+        selector = int(vsk.random(0, 4))
+
+        for i, (x, y) in enumerate(grid_points):
+            if not snowflake_field.contains(Point(x, y)):
+                continue
+
+            line = shortest_line(mid_line, Point(x, y))
+            if line.length < self.snowflake_size * 2.0:
+                continue
+
+            if i%5 != selector:
+                continue
+
+            if vsk.random(0, 1) > self.non_star_percentage / 100:
+                continue
+
+            # check we are not too close to a point we have already used
+            too_close = any(math.hypot(used_x - x, used_y - y) < self.snowflake_size * 3
+                        for used_x, used_y in used_points)
+            if not too_close:
+                star = self.draw_a_star(x, y, vsk.random)
+                if not credits_box.intersects(star):
+                    sketch_group.add_geom(star, 3, f"star_{x}_{y}")
+                    used_points.append((x, y))
 
         sketch_group.draw(vsk)
+
+    def draw_a_star(self, x, y, random):
+        # draw a star
+        if random(0, 1) > self.dendrite_proportion:
+            sector_star = self.hexagon_star_with_sector_ends(
+                x=x,
+                y=y,
+                radius=self.snowflake_size,
+                thickness=random(0.4,0.7),
+                sector_offset=random(1.0, self.snowflake_size - 1.0),
+                sector_width=random(0, 1.0)
+            )
+            return affinity.rotate(sector_star, origin=(x, y), angle=self.angle)
+        else:
+            # draw a dendrite
+            branch_configs = list(self.random_branch_config(self.snowflake_size, 0.1, random))
+            dendrite = self.stellar_dendrite(x, y, self.snowflake_size, branch_configs)
+            return affinity.rotate(dendrite, origin=(x, y), angle=self.angle)
 
     def hexagon(self, x: float, y: float, radius: float) -> BaseGeometry:
         points = []
@@ -341,7 +379,7 @@ class SnowflakeCardSketch(vsketch.SketchClass):
 
     def random_branch_config(self, radius: float, thickness: float, random) -> Iterable[BranchConfig]:
         fern_like = random(0, 1) < 0.2
-        number_of_branches = math.ceil(random(2, 5))
+        number_of_branches = math.ceil(random(2, 4))
         offset_start = random(radius/9, radius/5)
         offset_end = random(radius*0.9, radius)
         first_length = None
@@ -359,21 +397,25 @@ class SnowflakeCardSketch(vsketch.SketchClass):
             thickness = random(thickness*0.5, thickness)
             yield BranchConfig(offset, length, thickness)
 
-    def stellar_dendrite(self, x: float, y: float, radius: float, thickness: float, branch_configs: list[BranchConfig]) -> BaseGeometry:
+    def stellar_dendrite(self, x: float, y: float, radius: float, branch_configs: list[BranchConfig]) -> BaseGeometry:
         # Start with a hexagon star
-        hexagons = []
+        lines = []
         for i in range(6):
             angle_degrees = i * 60
-            elongated_hexagon = self.elongated_hexagon(x, y, radius, thickness)
-            hexagons.append(affinity.rotate(geom=elongated_hexagon, origin=(x, y), angle=angle_degrees))
+            branch = LineString([(x, y), (x + radius * math.cos(math.radians(angle_degrees)),
+                                        y + radius * math.sin(math.radians(angle_degrees)))])
+            lines.append(branch)
             for branch_config in branch_configs:
                 branch_start_x = x + branch_config.offset * math.cos(math.radians(angle_degrees))
                 branch_start_y = y + branch_config.offset * math.sin(math.radians(angle_degrees))
-                elongated_hexagon_left = self.elongated_hexagon(branch_start_x, branch_start_y, branch_config.length, branch_config.thickness, fix=True)
-                hexagons.append(affinity.rotate(geom=elongated_hexagon_left, origin=(branch_start_x, branch_start_y), angle=angle_degrees-60))
-                elongated_hexagon_right = self.elongated_hexagon(branch_start_x, branch_start_y, branch_config.length, branch_config.thickness, fix=True)
-                hexagons.append(affinity.rotate(geom=elongated_hexagon_right, origin=(branch_start_x, branch_start_y), angle=angle_degrees+60))
-        return unary_union(hexagons)
+                branch_end_left_x = branch_start_x + branch_config.length * math.cos(math.radians(angle_degrees-60))
+                branch_end_left_y = branch_start_y + branch_config.length * math.sin(math.radians(angle_degrees-60))
+                lines.append(LineString([(branch_start_x, branch_start_y), (branch_end_left_x, branch_end_left_y)]))
+                branch_end_right_x = branch_start_x + branch_config.length * math.cos(math.radians(angle_degrees+60))
+                branch_end_right_y = branch_start_y + branch_config.length * math.sin(math.radians(angle_degrees+60))
+                lines.append(LineString([(branch_start_x, branch_start_y), (branch_end_right_x, branch_end_right_y)]))
+
+        return MultiLineString(lines)
 
 
     def finalize(self, vsk: vsketch.Vsketch) -> None:
