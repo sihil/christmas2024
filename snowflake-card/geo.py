@@ -5,6 +5,7 @@ import math
 from typing import Tuple
 
 import numpy as np
+from shapely.coordinates import transform
 from shapely.geometry.polygon import Polygon
 
 
@@ -85,7 +86,7 @@ def create_offset_polygon(polygon, distance):
     return Polygon(new_coords)
 
 
-def perspective_by_angle(polygon, angle_degrees, distance=10):
+def perspective_by_angle(geometry, angle_degrees, distance=10):
     """
     Apply 3D perspective transformation to a polygon based on a viewing angle.
 
@@ -102,7 +103,7 @@ def perspective_by_angle(polygon, angle_degrees, distance=10):
     print(f"angle: {angle_degrees} degrees = {angle} radians")
 
     # Get the bounds and center of the polygon
-    minx, miny, maxx, maxy = polygon.bounds
+    minx, miny, maxx, maxy = geometry.bounds
     center_x = (minx + maxx) / 2
     center_y = (miny + maxy) / 2
 
@@ -128,8 +129,8 @@ def perspective_by_angle(polygon, angle_degrees, distance=10):
 
         return new_x, new_y
 
-    # Apply transformation to all coordinates
-    coords = list(polygon.exterior.coords)
-    new_coords = [transform_point(x, y) for x, y in coords]
+    def transform_all(coords):
+        return np.array([transform_point(x, y) for x, y in coords])
 
-    return Polygon(new_coords)
+    # Apply transformation to all coordinates
+    return transform(geometry, transform_all)

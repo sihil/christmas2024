@@ -19,7 +19,7 @@ from shapely.set_operations import difference
 from vpype import FONT_NAMES
 from vsketch import Vsketch
 
-from geo import create_offset_polygon
+from geo import create_offset_polygon, perspective_by_angle
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -73,9 +73,9 @@ class SnowflakeCardSketch(vsketch.SketchClass):
     angle = vsketch.Param(0, min_value=0, max_value=45)
     centre_x = vsketch.Param(210*3/4, min_value=0, max_value=210)
     centre_y = vsketch.Param(148/2, min_value=0, max_value=148)
-    snowflake_size = vsketch.Param(3.0, min_value=2.0, max_value=20.0)
-    grid_spacing = vsketch.Param(6.0, min_value=5.0, max_value=20.0)
-    outer_size = vsketch.Param(56, min_value=10, max_value=100)
+    snowflake_size = vsketch.Param(2.8, min_value=2.0, max_value=20.0)
+    grid_spacing = vsketch.Param(5.6, min_value=5.0, max_value=20.0)
+    outer_size = vsketch.Param(52, min_value=10, max_value=100)
     inner_size = vsketch.Param(50, min_value=10, max_value=100)
     centre_size = vsketch.Param(44, min_value=10, max_value=100)
     dendrite_proportion = vsketch.Param(0.35, min_value=0.0, max_value=1.0)
@@ -101,13 +101,18 @@ class SnowflakeCardSketch(vsketch.SketchClass):
         vsk.stroke(2)
 
         # add some credits text to the back of the card
-        vsk.text("Card designed and plotted by Simon Hildrew", 210/4, 148*0.98, align="center", size=2.5)
+        text_centre_x, text_centre_y = (210/4, 148*0.96)
+        text_size = 2.5
+        for i in range(2):
+            vsk.text("Card designed and plotted by Simon Hildrew", text_centre_x, text_centre_y, align="center", size=text_size)
         credits_box = Polygon([
-            (210/10, 148*0.97),
-            (210*4/10, 148*0.97),
-            (210*4/10, 148*0.99),
-            (210/10, 148*0.99)
+            (text_centre_x - 210/7, text_centre_y - text_size/2),
+            (text_centre_x + 210/7, text_centre_y - text_size/2),
+            (text_centre_x + 210/7, text_centre_y + text_size/2),
+            (text_centre_x - 210/7, text_centre_y + text_size/2)
         ])
+        if self.debug:
+            sketch_group.add_geom(credits_box, 1, "credits_box")
 
         # make a rectangle with the margin of the size of a snowflake in from the edge
         margin = self.snowflake_size * 1.5
@@ -173,8 +178,10 @@ class SnowflakeCardSketch(vsketch.SketchClass):
                         for used_x, used_y in used_points)
             if not too_close:
                 star = self.draw_a_star(x, y, glitter_flakes_size, vsk.random)
-                if snowflake_field.contains(star) and not credits_box.intersects(star):
-                    sketch_group.add_geom(star, 3, f"star_{x}_{y}")
+                perspective_star = perspective_by_angle(star, vsk.random(-45, 45), distance=20)
+                rotated_star = affinity.rotate(perspective_star, origin=(x, y), angle=vsk.random(0, 359))
+                if snowflake_field.contains(rotated_star) and not credits_box.intersects(rotated_star):
+                    sketch_group.add_geom(rotated_star, 3, f"star_{x}_{y}")
                     used_points.append((x, y))
 
         sketch_group.draw(vsk)
@@ -186,9 +193,9 @@ class SnowflakeCardSketch(vsketch.SketchClass):
                 x=x,
                 y=y,
                 radius=radius,
-                thickness=random(0.4,0.7),
-                sector_offset=random(1.0, self.snowflake_size - 1.0),
-                sector_width=random(0, 1.0)
+                thickness=self.snowflake_size * random(0.1,0.3),
+                sector_offset=random(self.snowflake_size/3, (self.snowflake_size/3)*2),
+                sector_width=random(0, self.snowflake_size/3)
             )
             return affinity.rotate(sector_star, origin=(x, y), angle=self.angle)
         else:
