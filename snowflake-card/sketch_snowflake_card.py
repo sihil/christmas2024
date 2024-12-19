@@ -68,48 +68,55 @@ class BranchConfig:
     length: float
     thickness: float
 
+
 class SnowflakeCardSketch(vsketch.SketchClass):
     # Sketch parameters
     angle = vsketch.Param(0, min_value=0, max_value=45)
-    centre_x = vsketch.Param(210*3/4, min_value=0, max_value=210)
-    centre_y = vsketch.Param(148/2, min_value=0, max_value=148)
+    paper_size = vsketch.Param("a5", choices=["a5", "a4"])
+
+
+    centre_x_prop = vsketch.Param(3/4, min_value=0, max_value=1, decimals=2)
+    centre_y_prop = vsketch.Param(1/2, min_value=0, max_value=1, decimals=2)
     snowflake_size = vsketch.Param(2.8, min_value=2.0, max_value=20.0)
     grid_spacing = vsketch.Param(5.6, min_value=5.0, max_value=20.0)
-    outer_size = vsketch.Param(52, min_value=10, max_value=100)
-    inner_size = vsketch.Param(50, min_value=10, max_value=100)
-    centre_size = vsketch.Param(44, min_value=10, max_value=100)
-    dendrite_proportion = vsketch.Param(0.35, min_value=0.0, max_value=1.0)
+    outer_size_prop = vsketch.Param(1/4, min_value=0.0, max_value=1.0, decimals=2)
+    sector_offset = vsketch.Param(20, min_value=0, max_value=50)
+    sector_width = vsketch.Param(10, min_value=0, max_value=50)
+    dendrite_proportion = vsketch.Param(0.35, min_value=0.0, max_value=1.0, decimals=2)
     non_star_percentage = vsketch.Param(90, min_value=0, max_value=100)
     page_divider = vsketch.Param(False)
     debug = vsketch.Param(False)
 
     def draw(self, vsk: vsketch.Vsketch) -> None:
-        vsk.size("a5", landscape=True, center=False)
+        vsk.size(self.paper_size, landscape=True, center=False)
         vsk.scale("mm")
+
+        psx, psy = (210, 148) if self.paper_size == "a5" else (297, 210)
 
         # create the snowflake
         vsk.penWidth("0.4mm")
 
         sketch_group = PolygonGroup("snowflake card")
 
-        mid_line = LineString([(210/2, 0), (210/2, 148)])
+
+        mid_line = LineString([(psx/2, 0), (psx/2, psy)])
 
         # draw a line down the middle of the card where it will be folded
         if self.page_divider:
-            vsk.stroke(1)
+            vsk.stroke(10)
             vsk.geometry(mid_line)
-        vsk.stroke(2)
 
         # add some credits text to the back of the card
-        text_centre_x, text_centre_y = (210/4, 148*0.96)
-        text_size = 2.5
+        vsk.stroke(1)
+        text_centre_x, text_centre_y = (psx/4, psy*0.96)
+        text_size = 2.5 * psx/210
         for i in range(2):
             vsk.text("Card designed and plotted by Simon Hildrew", text_centre_x, text_centre_y, align="center", size=text_size)
         credits_box = Polygon([
-            (text_centre_x - 210/7, text_centre_y - text_size/2),
-            (text_centre_x + 210/7, text_centre_y - text_size/2),
-            (text_centre_x + 210/7, text_centre_y + text_size/2),
-            (text_centre_x - 210/7, text_centre_y + text_size/2)
+            (text_centre_x - psx/7, text_centre_y - text_size/2),
+            (text_centre_x + psx/7, text_centre_y - text_size/2),
+            (text_centre_x + psx/7, text_centre_y + text_size/2),
+            (text_centre_x - psx/7, text_centre_y + text_size/2)
         ])
         if self.debug:
             sketch_group.add_geom(credits_box, 1, "credits_box")
@@ -118,32 +125,24 @@ class SnowflakeCardSketch(vsketch.SketchClass):
         margin = self.snowflake_size * 1.5
         snowflake_field = Polygon([
             (margin, margin),
-            (210-margin, margin),
-            (210-margin, 148-margin),
-            (margin, 148-margin)]
+            (psx-margin, margin),
+            (psx-margin, psy-margin),
+            (margin, psy-margin)]
         )
 
         # coords of front of card
-        front_centre_x = self.centre_x
-        front_centre_y = self.centre_y
+        front_centre_x = self.centre_x_prop * psx
+        front_centre_y = self.centre_y_prop * psy
 
         # draw a snowflake with sector ends
-        sector_star_outer = self.hexagon_star_with_sector_ends(front_centre_x, front_centre_y, self.outer_size, 15, sector_offset=20, sector_width=10)
+        sector_star_outer = self.hexagon_star_with_sector_ends(front_centre_x, front_centre_y, self.outer_size_prop * psx, 15, sector_offset=self.sector_offset, sector_width=self.sector_width)
         rotated_star_outer = affinity.rotate(sector_star_outer, origin=(front_centre_x, front_centre_y), angle=30+self.angle)
-
-        sector_star_inner = self.hexagon_star_with_sector_ends(front_centre_x, front_centre_y, self.inner_size, 7, sector_offset=26, sector_width=10)
-        rotated_star_inner = affinity.rotate(sector_star_inner, origin=(front_centre_x, front_centre_y), angle=30+self.angle)
-
-        sector_star_centre = self.hexagon_star_with_sector_ends(front_centre_x, front_centre_y, self.centre_size, 0, sector_offset=32, sector_width=8)
-        rotated_star_centre = affinity.rotate(sector_star_centre, origin=(front_centre_x, front_centre_y), angle=30+self.angle)
 
         if self.debug:
             sketch_group.add_polygon(rotated_star_outer, 10, "star1")
-            sketch_group.add_polygon(rotated_star_inner, 10, "star2")
-            sketch_group.add_polygon(rotated_star_centre, 10, "star3")
 
         # draw a triangular grid from the centre of the front of the card
-        grid_points = self.triangular_grid(front_centre_x, front_centre_y, self.grid_spacing, self.outer_size*3.5, angle_degrees=30+self.angle)
+        grid_points = self.triangular_grid(front_centre_x, front_centre_y, self.grid_spacing, psx, angle_degrees=30+self.angle)
         used_points = []
 
         # first, fill in the star outline
@@ -430,8 +429,12 @@ class SnowflakeCardSketch(vsketch.SketchClass):
         return MultiLineString(lines)
 
 
+    # layers are:
+    # 1: credit text
+    # 2: snowflake
+    # 3: sparkles
     def finalize(self, vsk: vsketch.Vsketch) -> None:
-        vsk.vpype("linemerge linesimplify reloop linesort")
+        vsk.vpype("linemerge --layer 2,3 linesimplify reloop linesort -t --layer 2,3 lmove 1,2 2 name --layer 2 white name --layer 3 sparkles")
 
 if __name__ == "__main__":
     SnowflakeCardSketch.display()
